@@ -29,6 +29,7 @@
 #include <torch/csrc/stable/ops.h>
 #include <torch/csrc/inductor/aoti_torch/c/shim.h>
 #include <array>
+#include <cstdint>
 #include <stdexcept>
 
 #include "nve_registry.hpp"
@@ -45,6 +46,19 @@ static ts::ScalarType dtype_tag_to_stable(int tag) {
     if (tag == nve::kBindingDtypeFloat32) return ts::ScalarType::Float;
     if (tag == nve::kBindingDtypeFloat16) return ts::ScalarType::Half;
     throw std::runtime_error("nve-torch-ops-cpu: unsupported BindingDtype tag");
+}
+
+// Per-thread host execution-context key. The CPU op originally passed
+// /*stream=*/0, so get_exec_context(0) handed every concurrent serving worker
+// the SAME (non-thread-safe) execution context — a silent data race under load.
+// HostEmbeddingLayer ignores the stream value (it never enters the CUDA runtime),
+// so any stable per-thread-unique token yields one execution context per worker.
+// The address of a thread_local is exactly that: unique per thread, stable for
+// the thread's lifetime. stream_ctx_map_ is then bounded by the (fixed) serving
+// worker-pool size. Snap patch — see nve_cpu_hostlayer_plan.md §3.
+static std::uint64_t host_ctx_key() {
+    static thread_local char sentinel;
+    return reinterpret_cast<std::uint64_t>(&sentinel);
 }
 
 extern "C" AtenTensorHandle nve_embedding_lookup_cpu(
@@ -64,13 +78,14 @@ extern "C" AtenTensorHandle nve_embedding_lookup_cpu(
         std::nullopt,
         ts::Device(ts::DeviceType::CPU));
 
-    // stream=0 — sentinel for host-only execution context cache key.
+    // Per-thread host execution context (see host_ctx_key) — distinct per worker
+    // so concurrent lookups never share the non-thread-safe context.
     nve::binding_lookup(
         binding,
         static_cast<std::size_t>(num_keys),
         reinterpret_cast<std::uintptr_t>(keys.data_ptr()),
         reinterpret_cast<std::uintptr_t>(output.data_ptr()),
-        /*stream=*/0);
+        /*stream=*/host_ctx_key());
 
     return to_shared_handle(output);
 }
@@ -116,7 +131,7 @@ extern "C" AtenTensorHandle nve_embedding_lookup_with_pooling_cpu(
         reinterpret_cast<std::uintptr_t>(offsets.data_ptr()),
         weight_dtype,
         weight_ptr,
-        /*stream=*/0);
+        /*stream=*/host_ctx_key());
 
     return to_shared_handle(output);
 }

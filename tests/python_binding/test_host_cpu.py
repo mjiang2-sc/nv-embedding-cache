@@ -218,3 +218,124 @@ def test_host_layer_rejects_optimize_for_training():
             device=torch.device("cpu"),
             # optimize_for_training defaults to True
         )
+
+
+# ---------------------------------------------------------------------------
+# Concurrency: per-thread execution context (Snap patch in nve_torch_ops_cpu.cpp).
+#
+# The CPU op originally passed /*stream=*/0, so get_exec_context(0) handed EVERY
+# concurrent serving thread the SAME execution context. A context is not
+# thread-safe (it holds get_buffer scratch such as linear_host_table_key_counter),
+# so a multi-threaded server racing on context 0 would silently corrupt results —
+# not crash. The patch keys the context by host_ctx_key() (a per-thread token), so
+# each worker gets its own context. These tests drive one HostLayer binding's
+# lookup from many threads at once and assert every result stays bit-exact to the
+# single-thread reference. Green proves the shared-context race is gone; run
+# against an UNPATCHED build they flake/mismatch under load.
+# ---------------------------------------------------------------------------
+
+
+def test_host_layer_cpu_concurrent_lookup_threadsafe():
+    # Eager path: N threads hammer layer(keys) on ONE shared binding. The custom
+    # op releases the GIL during the C++ gather, so the lookups truly overlap.
+    import threading
+
+    num_embeddings = 4096
+    embed_size = 16
+    weight = (torch.arange(num_embeddings, dtype=torch.float32)
+              .unsqueeze(1).expand(num_embeddings, embed_size).contiguous())
+    layer = _make_layer(num_embeddings, embed_size, weight, storage_kind="memblock")
+
+    num_threads = 16
+    iters = 200
+    # Distinct key set per thread (varied lengths/values stress the per-context
+    # scratch the race corrupts).
+    torch.manual_seed(0)
+    key_sets = [
+        torch.randint(0, num_embeddings, (1 + (t * 7) % 257,), dtype=torch.int64)
+        for t in range(num_threads)
+    ]
+    expected = [weight[k] for k in key_sets]
+
+    errors = []
+    start = threading.Barrier(num_threads)
+
+    def worker(t):
+        keys, exp = key_sets[t], expected[t]
+        try:
+            start.wait()  # release all threads together → maximum contention
+            for _ in range(iters):
+                out = layer(keys)
+                if not torch.equal(out, exp):
+                    errors.append((t, "result mismatch (shared-context race?)"))
+                    return
+        except Exception as e:  # noqa: BLE001
+            errors.append((t, repr(e)))
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in range(num_threads)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+
+    assert not errors, f"concurrent HostLayer lookups raced/failed: {errors[:8]}"
+
+
+def test_host_layer_cpu_aot_concurrent_run_threadsafe():
+    # AOT path — the production-representative case: the masterchef_v2 CPU engine
+    # calls ONE AOTIModelPackageLoader's run() from multiple worker threads. Mirror
+    # that: load_aot once, then hammer loader.run from N threads. The in-graph
+    # nve_ops::embedding_lookup hits the same per-thread-context path.
+    import threading
+
+    num_embeddings = 4096
+    embed_size = 16
+    weight = (torch.arange(num_embeddings, dtype=torch.float32)
+              .unsqueeze(1).expand(num_embeddings, embed_size).contiguous())
+
+    class M(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.emb = nve_layers.NVEmbedding(
+                num_embeddings, embed_size, torch.float32,
+                layer_type=nve_layers.LayerType.HostLayer,
+                weight_init=weight, optimize_for_training=False)
+
+        def forward(self, keys):
+            return self.emb(keys)
+
+    num_threads = 16
+    iters = 100
+    torch.manual_seed(1)
+    key_sets = [
+        torch.randint(0, num_embeddings, (1 + (t * 11) % 199,), dtype=torch.int64)
+        for t in range(num_threads)
+    ]
+    expected = [weight[k] for k in key_sets]
+
+    with tempfile.TemporaryDirectory() as save_dir:
+        nve_export.export_aot(M(), (key_sets[0],), save_dir)
+        loader, _ = nve_export.load_aot(save_dir, device=torch.device("cpu"))
+
+        errors = []
+        start = threading.Barrier(num_threads)
+
+        def worker(t):
+            keys, exp = key_sets[t], expected[t]
+            try:
+                start.wait()
+                for _ in range(iters):
+                    out = loader.run([keys])[0]
+                    if not torch.equal(out, exp):
+                        errors.append((t, "result mismatch (shared-context race?)"))
+                        return
+            except Exception as e:  # noqa: BLE001
+                errors.append((t, repr(e)))
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(num_threads)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+
+        assert not errors, f"concurrent AOT HostLayer runs raced/failed: {errors[:8]}"

@@ -83,9 +83,36 @@ inline std::shared_ptr<MemBlock> create_memblock(
     const std::string& memblock_type,
     size_t embedding_size, size_t num_embeddings,
     DataType_t dtype, int device_index,
-    bool device_resident = false)
+    bool device_resident = false,
+    bool force_host = false)
 {
+    // Snap unified memblock-residency fix — correct for BOTH the CPU/HostLayer and
+    // GPU/GPULayer shims (this header compiles into libnve_loader_shim.so for each
+    // arch). The exporter normalises BOTH a HostLayer's UserMemBlock AND a
+    // GPULayer's device storage to "Managed" (raw pointers can't be serialised), so
+    // the serialised memblock type is NOT authoritative; residency must follow the
+    // layer's intent, which the caller derives from layer_type:
+    //   - force_host      (layer_type == "HostLayer")  -> plain-malloc host block
+    //   - device_resident (layer_type == "GPULayer")   -> device HBM
+    // Without this a HostLayer builds a ManagedMemBlock (cudaMallocManaged -> "CUDA
+    // driver is a stub library" on a driverless CPU pod) and a GPULayer builds a
+    // ManagedMemBlock with PreferredLocation=Host (serves from host DRAM over PCIe,
+    // not HBM). Covers v1, v2-with-storage_ref, and v2-without-storage_ref — the one
+    // schema-agnostic choke point.
+    if (force_host) {
+        // HostLayer: always host-resident (driverless), regardless of the
+        // serialised type. Plain malloc — no CUDA.
+        return std::make_shared<HostMemBlock>(embedding_size, num_embeddings, dtype);
+    }
     if (memblock_type.find("Managed") != std::string::npos) {
+        if (device_resident) {
+            // GPULayer: force device HBM (cudaMalloc via LinearMemBlock), matching
+            // the 26.05 User->LinearMemBlock(device) path, instead of a host-
+            // preferred ManagedMemBlock that would serve over PCIe.
+            return std::make_shared<LinearMemBlock>(
+                embedding_size, num_embeddings, dtype, device_index);
+        }
+        // LinearUVM (device_resident=false): UVM + GPU cache — keep Managed.
         return std::make_shared<ManagedMemBlock>(
             embedding_size, num_embeddings, dtype,
             std::vector<int>{device_index});
@@ -354,7 +381,8 @@ private:
             size_t emb_size, size_t num_emb,
             DataType_t nve_dtype, int device_index,
             bool device_resident,
-            const TopologyMap& topology) {
+            const TopologyMap& topology,
+            bool force_host = false) {
         const std::string eff = resource_dir_->remap(key);
         auto existing = resource_dir_->find_memblock(eff);
         if (existing) return {existing, false};
@@ -376,9 +404,14 @@ private:
         auto topo_it = topology.find(eff);
         if (topo_it != topology.end()) override = topo_it->second;
 
+        // Residency follows the layer's intent (force_host for HostLayer,
+        // device_resident for GPULayer) — NOT the serialised memblock type, which
+        // the exporter lossily normalises to "Managed". create_memblock is the one
+        // choke point that applies the rule; force_host also short-circuits NVL (a
+        // HostLayer is never multi-device).
         const std::string mb_type = mb_cfg.value("type", "MemBlockType.Managed");
         std::shared_ptr<MemBlock> mb;
-        if (mb_type.find("NVL") != std::string::npos) {
+        if (!force_host && mb_type.find("NVL") != std::string::npos) {
             // Not in topology → span all devices [0, deviceCount-1].
             auto gpu_ids = resolve_memblock_devices(MemBlockType::NVL, /*def_index=*/0, override);
             mb = std::make_shared<NVLMemBlock>(emb_size, num_emb, nve_dtype, gpu_ids);
@@ -386,7 +419,7 @@ private:
             // Not in topology → the supplied device_index.
             int dev = override.empty() ? device_index : override.front();
             mb = create_memblock(mb_type, emb_size, num_emb, nve_dtype,
-                                 dev, device_resident);
+                                 dev, device_resident, force_host);
         }
 
         resource_dir_->insert_memblock(eff, mb);
@@ -534,7 +567,8 @@ private:
                     std::tie(mem_block, needs_weight_load) =
                         get_or_build_memblock(storage_ref, mb_resources,
                                                emb_size, num_emb, nve_dtype,
-                                               device_index, device_resident, topology);
+                                               device_index, device_resident, topology,
+                                               /*force_host=*/layer_type == "HostLayer");
                 } else {
                     std::string mb_type = (layer_type == "HostLayer")
                         ? "MemBlockType.Host" : "MemBlockType.Managed";
