@@ -19,7 +19,15 @@ if(NVE_WITH_MPI)
   find_package(MPI REQUIRED)
 endif()
 
-file(GLOB common_src RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} *.cpp *.cu)
+# CPU/host-only build (NVE_WITH_CUDA=OFF) excludes the GPU .cu translation units
+# (gpu_embedding_layer / gpu_table / hierarchical_embedding_layer /
+# linear_embedding_layer); their classes are guarded out of the C-API factories
+# in nve_c_api_layers.cpp / nve_c_api_tables.cpp.
+if(NVE_WITH_CUDA)
+  file(GLOB common_src RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} *.cpp *.cu)
+else()
+  file(GLOB common_src RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} *.cpp)
+endif()
 add_library(nve-common SHARED ${common_src})
 target_compile_features(nve-common PUBLIC cxx_std_17)
 
@@ -34,8 +42,8 @@ target_include_directories(nve-common PRIVATE
   ${PROJECT_SOURCE_DIR}/third_party/cuembed
 )
 target_link_libraries(nve-common PUBLIC
-  CUDA::cudart
-  CUDA::cuda_driver
+  $<$<BOOL:${NVE_WITH_CUDA}>:CUDA::cudart>
+  $<$<BOOL:${NVE_WITH_CUDA}>:CUDA::cuda_driver>
   $<$<BOOL:${NVE_WITH_MPI}>:MPI::MPI_CXX>
 )
 

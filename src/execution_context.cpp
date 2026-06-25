@@ -41,6 +41,12 @@ void* ExecutionContext::get_buffer(const std::string& name, size_t size, bool ho
 }
 
 std::vector<cudaStream_t> ExecutionContext::get_aux_streams(const std::string& name, size_t num_streams) {
+#if !NVE_WITH_CUDA
+    // CPU/host-only build: HostEmbeddingLayer never requests aux CUDA streams.
+    (void)name;
+    (void)num_streams;
+    NVE_THROW_("get_aux_streams requires CUDA (NVE built with NVE_WITH_CUDA=OFF)");
+#else
     auto kv = aux_streams_storage_.find(name);
     if (kv == aux_streams_storage_.end()) {
         std::vector<cudaStream_t> streams(num_streams);
@@ -58,6 +64,7 @@ std::vector<cudaStream_t> ExecutionContext::get_aux_streams(const std::string& n
         }
     }
     return kv->second;
+#endif  // NVE_WITH_CUDA
 }
 
 bool ExecutionContext::is_owned(const void* ptr, const std::string& name, bool host_alloc) {
@@ -88,6 +95,7 @@ ExecutionContext::ExecutionContext(
 
 ExecutionContext::~ExecutionContext() {
   wait();
+#if NVE_WITH_CUDA
   // Without a CUDA driver there are no aux streams to destroy, and the runtime
   // calls would fail anyway — skip them during teardown.
   if (driver_available_) {
@@ -97,6 +105,7 @@ ExecutionContext::~ExecutionContext() {
       }
     }
   }
+#endif  // NVE_WITH_CUDA
 }
 
 }  // namespace nve

@@ -33,6 +33,7 @@ nve_status_t nve_gpu_embedding_layer_create(
   if (!out || !config) {
     return nve_set_error(NVE_ERROR_INVALID_ARGUMENT, "out and config must not be NULL");
   }
+#if NVE_WITH_CUDA
   NVE_C_TRY
     nve::GPUEmbeddingLayerConfig cfg;
     cfg.layer_name = config->layer_name ? config->layer_name : "";
@@ -57,6 +58,12 @@ nve_status_t nve_gpu_embedding_layer_create(
     *out = new nve_layer_s{std::move(layer), key_type};
     return NVE_SUCCESS;
   NVE_C_CATCH
+#else
+  (void)key_type;
+  (void)allocator;
+  return nve_set_error(NVE_ERROR_INVALID_ARGUMENT,
+                       "GPU embedding layer unavailable: NVE built with NVE_WITH_CUDA=OFF (CPU/host-only)");
+#endif
 }
 
 /* ============================================================================
@@ -73,6 +80,7 @@ nve_status_t nve_linear_uvm_layer_create(
   if (gpu_table->key_type != key_type) {
     return nve_set_error(NVE_ERROR_INVALID_ARGUMENT, "gpu_table key type must match layer key type");
   }
+#if NVE_WITH_CUDA
   NVE_C_TRY
     auto alloc = unwrap_allocator(allocator);
     std::shared_ptr<nve::EmbeddingLayerBase> layer;
@@ -104,6 +112,13 @@ nve_status_t nve_linear_uvm_layer_create(
     *out = new nve_layer_s{std::move(layer), key_type};
     return NVE_SUCCESS;
   NVE_C_CATCH
+#else
+  (void)key_type;
+  (void)gpu_table;
+  (void)allocator;
+  return nve_set_error(NVE_ERROR_INVALID_ARGUMENT,
+                       "LinearUVM embedding layer unavailable: NVE built with NVE_WITH_CUDA=OFF (CPU/host-only)");
+#endif
 }
 
 /* ============================================================================
@@ -117,6 +132,7 @@ nve_status_t nve_hierarchical_layer_create(
   if (!out || !config || !tables || num_tables <= 0) {
     return nve_set_error(NVE_ERROR_INVALID_ARGUMENT, "Invalid arguments");
   }
+#if NVE_WITH_CUDA
   NVE_C_TRY
     std::vector<nve::table_ptr_t> cpp_tables;
     cpp_tables.reserve(static_cast<size_t>(num_tables));
@@ -167,6 +183,14 @@ nve_status_t nve_hierarchical_layer_create(
     *out = new nve_layer_s{std::move(layer), key_type};
     return NVE_SUCCESS;
   NVE_C_CATCH
+#else
+  (void)key_type;
+  (void)tables;
+  (void)num_tables;
+  (void)allocator;
+  return nve_set_error(NVE_ERROR_INVALID_ARGUMENT,
+                       "Hierarchical embedding layer unavailable: NVE built with NVE_WITH_CUDA=OFF (CPU/host-only)");
+#endif
 }
 
 /* ============================================================================

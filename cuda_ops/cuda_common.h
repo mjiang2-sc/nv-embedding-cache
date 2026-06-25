@@ -44,18 +44,24 @@ public:
         if (device_id_ < 0) {
             return;
         }
+#if NVE_WITH_CUDA
         NVE_CHECK_(cudaGetDevice(&curr_device_));
         swap_device_ = curr_device_ != device_id_;
         if (swap_device_) {
             NVE_CHECK_(cudaSetDevice(device_id_));
         }
-
+#else
+        // CPU/host-only build: a device_id >= 0 is never valid (no CUDA runtime).
+        NVE_THROW_("ScopedDevice: device_id >= 0 requested in a CPU/host-only build (NVE_WITH_CUDA=OFF)");
+#endif
     }
     ~ScopedDevice()
     {
+#if NVE_WITH_CUDA
         if (swap_device_) {
             NVE_CHECK_(cudaSetDevice(curr_device_));
         }
+#endif
     }
 private:
     int device_id_;
@@ -71,6 +77,11 @@ private:
 // without a GPU/driver (e.g. host-only inference) use this to gate CUDA calls.
 inline bool driver_available()
 {
+#if NVE_WITH_CUDA
     static const bool available = (cuInit(0) == CUDA_SUCCESS);
     return available;
+#else
+    // CPU/host-only build links no CUDA driver — there is never a driver.
+    return false;
+#endif
 }

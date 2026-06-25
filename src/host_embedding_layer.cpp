@@ -294,15 +294,24 @@ void HostEmbeddingLayer<KeyType>::lookup(context_ptr_t& ctx, const int64_t num_k
   // cudaMemcpyAsync handles it correctly.
   auto* final_output = output_bw->get_buffer(cudaMemoryTypeUnregistered);
   if (final_output != nullptr && final_output != output) {
+#if NVE_WITH_CUDA
     NVE_CHECK_(cudaMemcpyAsync(output, final_output, output_buffer_size,
                                cudaMemcpyDefault, lookup_stream));
+#else
+    // CPU/host-only build: the relocated slot is host memory — plain memcpy.
+    std::memcpy(output, final_output, output_buffer_size);
+#endif
   }
   // Same for hitmask, when the caller supplied one.
   if (output_hitmask != nullptr) {
     auto* final_hitmask = hitmask_bw->get_buffer(hitmask_bw->get_last_access());
     if (final_hitmask != nullptr && final_hitmask != output_hitmask) {
+#if NVE_WITH_CUDA
       NVE_CHECK_(cudaMemcpyAsync(output_hitmask, final_hitmask, hitmask_buffer_size,
                                  cudaMemcpyDefault, lookup_stream));
+#else
+      std::memcpy(output_hitmask, final_hitmask, hitmask_buffer_size);
+#endif
     }
   }
 

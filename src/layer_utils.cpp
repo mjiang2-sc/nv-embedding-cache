@@ -45,8 +45,17 @@ bool ContextRegistry::empty() const {
 }
 
 std::shared_ptr<nve::DefaultECEvent> ContextRegistry::create_sync_event() {
+#if NVE_WITH_CUDA
   std::lock_guard lock(mutex_);
   return std::make_shared<nve::DefaultECEvent>(lookup_streams_);
+#else
+  // CPU/host-only build: cross-stream CUDA-event sync is GPU-only and is never
+  // reached on the HostLayer path (only the GPU/hierarchical layers call this).
+  // Guarded so libnve-common.so does not instantiate DefaultECEvent's CUDA
+  // ctor/vtable (cudaEventCreateWithFlags / cudaEventRecord / cudaEventDestroy /
+  // cudaStreamWaitEvent -> libcudart) just by compiling layer_utils.cpp.
+  NVE_THROW_("ContextRegistry::create_sync_event requires CUDA (NVE built with NVE_WITH_CUDA=OFF)");
+#endif
 }
 
 void ContextRegistry::update_streams() {
@@ -153,12 +162,16 @@ void AutoInsertHandler::collect_keys_and_data(
       keys_host_buf,
       static_cast<size_t>(collection_part_size * key_size_));
   } else {
+#if NVE_WITH_CUDA
     NVE_CHECK_(cudaMemcpyAsync(
       dst_keys,
       keys_bw->get_buffer(keys_bw->get_last_access()),
       static_cast<size_t>(collection_part_size * key_size_),
       cudaMemcpyDefault,
       lookup_stream));
+#else
+    NVE_THROW_("AutoInsertHandler device key copy requires CUDA (NVE built with NVE_WITH_CUDA=OFF)");
+#endif
   }
 
   // Make the hitmask host-visible so we can rewrite missed keys to the sentinel after the sync below.
@@ -170,6 +183,7 @@ void AutoInsertHandler::collect_keys_and_data(
   }
 
   // copy partial data
+#if NVE_WITH_CUDA
   NVE_CHECK_(cudaMemcpyAsync(
     reinterpret_cast<uint8_t*>(insert_data_->get_ptr(static_cast<size_t>(collection_total_size * collected_output_stride_))) + (collected_keys_ * collected_output_stride_),
     output_bw->get_buffer(keys_bw->get_last_access()),
@@ -180,6 +194,13 @@ void AutoInsertHandler::collect_keys_and_data(
   // synchronize since other threads can copy on other lookup streams, and when we launch we won't know who to wait on
   // also input key/data buffers can change once we return
   NVE_CHECK_(cudaStreamSynchronize(lookup_stream));
+#else
+  // CPU/host-only build: the gathered buffer is host memory — copy synchronously.
+  std::memcpy(
+    reinterpret_cast<uint8_t*>(insert_data_->get_ptr(static_cast<size_t>(collection_total_size * collected_output_stride_))) + (collected_keys_ * collected_output_stride_),
+    output_bw->get_buffer(keys_bw->get_last_access()),
+    static_cast<size_t>(collection_part_size * collected_output_stride_));
+#endif
 
   // Rewrite missed keys (hitmask bit == 0) to the configured sentinel so the destination table is not
   // contaminated with garbage values from unresolved slots. Per-call hitmask indices [0, collection_part_size)

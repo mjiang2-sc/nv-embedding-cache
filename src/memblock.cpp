@@ -64,8 +64,13 @@ struct GpuAllocationInfo
     int id;
 };
 
-NVLMemBlock::NVLMemBlock(size_t size_to_alloc, const std::vector<int>& gpu_ids) 
+NVLMemBlock::NVLMemBlock(size_t size_to_alloc, const std::vector<int>& gpu_ids)
     : MemBlock(MemBlockType::NVL) {
+#if !NVE_WITH_CUDA
+    (void)size_to_alloc;
+    (void)gpu_ids;
+    NVE_THROW_("NVLMemBlock requires CUDA (NVE built with NVE_WITH_CUDA=OFF)");
+#else
     static constexpr size_t kLargePageSizeBytes = size_t(2) * 1024 * 1024;
   
     int cur_device = 0;
@@ -143,14 +148,17 @@ NVLMemBlock::NVLMemBlock(size_t size_to_alloc, const std::vector<int>& gpu_ids)
     NVE_CHECK_(cudaDeviceSynchronize());
     NVE_CHECK_(cudaMemset(get_ptr(), 0, total_bytes_));
     NVE_CHECK_(cudaSetDevice(cur_device));
+#endif  // NVE_WITH_CUDA
 }
 
 NVLMemBlock::~NVLMemBlock() {
+#if NVE_WITH_CUDA
     NVE_CHECK_(cuMemUnmap(ptr_, total_bytes_) == 0);
     for (size_t i = 0; i < handles_.size(); ++i) {
         NVE_CHECK_(cuMemRelease(handles_[i]) == 0);
     }
     NVE_CHECK_(cuMemAddressFree(ptr_, total_bytes_) == 0);
+#endif  // NVE_WITH_CUDA
 }
 
 void* NVLMemBlock::get_ptr() const {
@@ -224,6 +232,11 @@ ManagedMemBlock::ManagedMemBlock(size_t row_size, size_t num_embeddings, nve::Da
     : ManagedMemBlock(row_size * num_embeddings * static_cast<size_t>(dtype_size(dtype)), gpu_ids) {}
 
 ManagedMemBlock::ManagedMemBlock(size_t size_to_alloc, const std::vector<int>& gpu_ids) : MemBlock(MemBlockType::MANAGED) {
+#if !NVE_WITH_CUDA
+    (void)size_to_alloc;
+    (void)gpu_ids;
+    NVE_THROW_("ManagedMemBlock requires CUDA (NVE built with NVE_WITH_CUDA=OFF)");
+#else
     NVE_CHECK_(cudaMallocManaged(&ptr_, size_to_alloc));
 #if defined(CUDART_VERSION) && CUDART_VERSION >= 13000
     cudaMemLocation loc;
@@ -242,6 +255,7 @@ ManagedMemBlock::ManagedMemBlock(size_t size_to_alloc, const std::vector<int>& g
     }
 #endif
     NVE_CHECK_(cudaDeviceSynchronize());
+#endif  // NVE_WITH_CUDA
 }
 
 void* ManagedMemBlock::get_ptr() const {
@@ -249,7 +263,9 @@ void* ManagedMemBlock::get_ptr() const {
 }
 
 ManagedMemBlock::~ManagedMemBlock() {
+#if NVE_WITH_CUDA
     NVE_CHECK_(cudaFree(ptr_));
+#endif  // NVE_WITH_CUDA
 }
 
 std::vector<int> resolve_memblock_devices(
@@ -260,6 +276,10 @@ std::vector<int> resolve_memblock_devices(
         return override;
     }
     if (type == MemBlockType::NVL) {
+#if !NVE_WITH_CUDA
+        (void)def_index;
+        NVE_THROW_("NVL memblock device resolution requires CUDA (NVE built with NVE_WITH_CUDA=OFF)");
+#else
         int num_gpus = 0;
         NVE_CHECK_(cudaGetDeviceCount(&num_gpus));
         NVE_CHECK_(def_index >= 0 && def_index < num_gpus,
@@ -270,6 +290,7 @@ std::vector<int> resolve_memblock_devices(
         for (int i = def_index; i < num_gpus; ++i)
             ids.push_back(i);
         return ids;
+#endif  // NVE_WITH_CUDA
     }
     return {def_index};
 }

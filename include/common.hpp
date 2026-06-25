@@ -27,6 +27,16 @@
 #include <memory>
 #include <logging.hpp>
 
+// NVE_WITH_CUDA gates all CUDA runtime/driver usage at COMPILE time. Default 1
+// (GPU build — byte-identical to upstream). The CMake `NVE_WITH_CUDA` option
+// passes -DNVE_WITH_CUDA=0 to build a CPU/host-only library that links no CUDA
+// runtime/driver (no libcudart / libcuda dependency in the resulting .so). This
+// fallback keeps any translation unit compiled without the CMake define on the
+// GPU path.
+#ifndef NVE_WITH_CUDA
+#define NVE_WITH_CUDA 1
+#endif
+
 // --- Debugging system --- //
 
 #ifdef NVE_ASSERT_

@@ -94,6 +94,7 @@ size_t get_largest_hugepage_bits(size_t alloc_size) {
 
 DefaultAllocator::DefaultAllocator(size_t host_alloc_threshold_bytes) : host_alloc_threshold_(host_alloc_threshold_bytes) {}
 
+#if NVE_WITH_CUDA
 cudaError_t DefaultAllocator::device_allocate(void** ptr, size_t sz, int device_id) noexcept {
     // Figure out if we need to change current device
     int curr_device;
@@ -181,8 +182,19 @@ cudaError_t DefaultAllocator::device_free_async(void* ptr, cudaStream_t stream, 
     }
     return res;
 }
+#else  // NVE_WITH_CUDA — CPU/host-only build: device allocation is unavailable.
+cudaError_t DefaultAllocator::device_allocate(void**, size_t, int) noexcept { return cudaErrorNotSupported; }
+cudaError_t DefaultAllocator::device_free(void*, int) noexcept { return cudaErrorNotSupported; }
+cudaError_t DefaultAllocator::device_allocate_async(void**, size_t, cudaStream_t, int) noexcept { return cudaErrorNotSupported; }
+cudaError_t DefaultAllocator::device_free_async(void*, cudaStream_t, int) noexcept { return cudaErrorNotSupported; }
+#endif  // NVE_WITH_CUDA
 
 cudaError_t DefaultAllocator::host_allocate(void** ptr, size_t sz) noexcept {
+#if !NVE_WITH_CUDA
+    // CPU/host-only build: no pinned/registered host memory, plain malloc only.
+    *ptr = std::malloc(sz);
+    return (*ptr == nullptr) ? cudaErrorMemoryAllocation : cudaSuccess;
+#else
     // guard on driver availability
     if (!driver_available()) {
         *ptr = std::malloc(sz);
@@ -213,9 +225,15 @@ cudaError_t DefaultAllocator::host_allocate(void** ptr, size_t sz) noexcept {
       ALLOC_DEBUG_PRINT("[%s] Huge pages allocation: ptr=%p, requested=%ld, allocated=%ld\n", __FUNCTION__, *ptr, sz, totalBytes);
       return cudaHostRegister(*ptr, totalBytes, cudaHostRegisterDefault);
     }
+#endif  // NVE_WITH_CUDA
 }
 
 cudaError_t DefaultAllocator::host_free(void* ptr) noexcept {
+#if !NVE_WITH_CUDA
+    // CPU/host-only build: host_allocate always used plain malloc.
+    std::free(ptr);
+    return cudaSuccess;
+#else
     // Mirror host_allocate: on a driverless system the buffer came from malloc.
     if (!driver_available()) {
         std::free(ptr);
@@ -239,8 +257,10 @@ cudaError_t DefaultAllocator::host_free(void* ptr) noexcept {
       ALLOC_DEBUG_PRINT("[%s] ptr=%p\n", __FUNCTION__, ptr);
       return cudaFreeHost(ptr);
     }
+#endif  // NVE_WITH_CUDA
 }
 
+#if NVE_WITH_CUDA
 cudaMemPool_t DefaultAllocator::getMemPool(int device) noexcept {
     if (mem_pools_.find(device) == mem_pools_.end()) {
         mem_pools_[device] = nullptr;
@@ -264,6 +284,7 @@ cudaMemPool_t DefaultAllocator::getMemPool(int device) noexcept {
     }
     return mem_pools_.at(device);
 }
+#endif  // NVE_WITH_CUDA
 
 #undef RETURN_IF_CUDA_ERROR_
 #undef ALLOC_DEBUG_PRINT

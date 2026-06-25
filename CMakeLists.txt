@@ -32,7 +32,20 @@ endfunction(dump_all_vars)
 file(READ "${CMAKE_SOURCE_DIR}/version.txt" NVE_VERSION)
 string(STRIP "${NVE_VERSION}" NVE_VERSION)
 
+# NVE_WITH_CUDA=OFF builds a CPU/host-only NVE that links no CUDA runtime/driver
+# (HostLayer serving on a host with zero NVIDIA libraries). Default ON keeps the
+# GPU build byte-identical. The CUDA toolkit is still used at BUILD time for the
+# CUDA headers (the public API signatures use cudaStream_t / cudaError_t etc.);
+# only the .cu GPU translation units, the CUDA::cudart / CUDA::cuda_driver LINKS,
+# and the runtime CALLS are dropped. Pairs with NVE_WITH_MPI=OFF (the MPI /
+# distributed backends hold the remaining cuMem*/cuInit). See nve_patches.md
+# "Patch 8".
+option(NVE_WITH_CUDA "Build CUDA GPU layers + link the CUDA runtime/driver (OFF = CPU/host-only, no NVIDIA libs)" ON)
+
 project(NV_Embedding_Cache LANGUAGES C CXX CUDA VERSION ${NVE_VERSION}) # Version format: Year.Month.Patch
+
+# Propagate NVE_WITH_CUDA (0/1) to every translation unit.
+add_compile_definitions(NVE_WITH_CUDA=$<BOOL:${NVE_WITH_CUDA}>)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

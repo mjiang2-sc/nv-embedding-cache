@@ -59,6 +59,7 @@ class ExecutionContext {
   // stays correct even when wait() is invoked from ~ExecutionContext() (where
   // virtual dispatch resolves to this base implementation, not a derived override).
   virtual void wait() {
+#if NVE_WITH_CUDA
     if (driver_available_) {
       NVE_CHECK_(cudaStreamSynchronize(lookup_stream_));
       NVE_CHECK_(cudaStreamSynchronize(modify_stream_));
@@ -68,6 +69,7 @@ class ExecutionContext {
         }
       }
     }
+#endif  // NVE_WITH_CUDA
   }
 
  protected:

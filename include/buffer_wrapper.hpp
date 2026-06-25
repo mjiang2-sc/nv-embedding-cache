@@ -79,10 +79,15 @@ class BufferWrapper {
         auto src = buffers_.at(last_access_);
         void* dst = const_cast<void*>(reinterpret_cast<const void*>(buffers_.at(mem_type))); // reinterpret cast then strip const for the copies handling const buffers
         if (src != dst) {
+#if NVE_WITH_CUDA
             NVE_CHECK_(cudaMemcpyAsync(dst, src, size_, cudaMemcpyDefault, stream));
             if (mem_type != cudaMemoryTypeDevice) {
                 NVE_CHECK_(cudaStreamSynchronize(stream)); // Synchronizing since next access can be on host.
             }
+#else
+            // CPU/host-only build: every buffer is host memory — copy synchronously.
+            std::memcpy(dst, src, size_);
+#endif
         }
     }
 
@@ -115,9 +120,15 @@ class BufferWrapper {
   std::unordered_map<cudaMemoryType, T*> buffers_;
 
   cudaMemoryType BufferType(const void* ptr) {
+#if NVE_WITH_CUDA
     cudaPointerAttributes attr;
     auto err = cudaPointerGetAttributes(&attr, ptr);
     return (err == cudaSuccess) ? attr.type : cudaMemoryTypeUnregistered;
+#else
+    // CPU/host-only build: every buffer is host memory.
+    (void)ptr;
+    return cudaMemoryTypeUnregistered;
+#endif
   }
 };
 

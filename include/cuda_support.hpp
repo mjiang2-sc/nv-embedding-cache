@@ -91,9 +91,21 @@ class RuntimeError<cudaError_t> : public Exception {
 
   inline cudaError_t error() const noexcept { return error_; }
 
-  inline const char* errorName() const noexcept { return cudaGetErrorName(error_); }
+  inline const char* errorName() const noexcept {
+#if NVE_WITH_CUDA
+    return cudaGetErrorName(error_);
+#else
+    return "cuda-disabled";
+#endif
+  }
 
-  inline const char* errorString() const noexcept { return cudaGetErrorString(error_); }
+  inline const char* errorString() const noexcept {
+#if NVE_WITH_CUDA
+    return cudaGetErrorString(error_);
+#else
+    return "cuda-disabled (NVE built with NVE_WITH_CUDA=OFF)";
+#endif
+  }
 
   virtual const char* what() const noexcept override {
     return hint().empty() ? errorString() : hint().c_str();
@@ -152,19 +164,27 @@ class RuntimeError<CUresult> : public Exception {
   inline CUresult result() const noexcept { return result_; }
 
   inline const char* errorName() const noexcept {
+#if NVE_WITH_CUDA
     const char* name;
     if (cuGetErrorName(result_, &name) != CUDA_SUCCESS) {
       name = "Call to `cuGetErrorName` failed!";
     }
     return name;
+#else
+    return "cuda-disabled";
+#endif
   }
 
   inline const char* errorString() const noexcept {
+#if NVE_WITH_CUDA
     const char* str;
     if (cuGetErrorString(result_, &str) != CUDA_SUCCESS) {
       str = "Call to `cuGetErrorString` failed!";
     }
     return str;
+#else
+    return "cuda-disabled (NVE built with NVE_WITH_CUDA=OFF)";
+#endif
   }
 
   virtual const char* what() const noexcept override {

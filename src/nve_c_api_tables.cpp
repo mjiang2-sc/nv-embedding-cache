@@ -23,6 +23,7 @@
  * Config conversion helpers
  * ============================================================================ */
 
+#if NVE_WITH_CUDA
 static nve::GPUTableConfig convert_gpu_table_config(const nve_gpu_table_config_t* c) {
   nve::GPUTableConfig cfg;
   cfg.device_id = c->device_id;
@@ -42,6 +43,7 @@ static nve::GPUTableConfig convert_gpu_table_config(const nve_gpu_table_config_t
   cfg.invalid_key = c->invalid_key;
   return cfg;
 }
+#endif  // NVE_WITH_CUDA
 
 extern "C" {
 
@@ -55,6 +57,7 @@ nve_status_t nve_gpu_table_create(
   if (!out || !config) {
     return nve_set_error(NVE_ERROR_INVALID_ARGUMENT, "out and config must not be NULL");
   }
+#if NVE_WITH_CUDA
   NVE_C_TRY
     auto cpp_config = convert_gpu_table_config(config);
     auto alloc = unwrap_allocator(allocator);
@@ -72,6 +75,12 @@ nve_status_t nve_gpu_table_create(
     *out = new nve_table_s{std::move(table), key_type};
     return NVE_SUCCESS;
   NVE_C_CATCH
+#else
+  (void)key_type;
+  (void)allocator;
+  return nve_set_error(NVE_ERROR_INVALID_ARGUMENT,
+                       "GPU table unavailable: NVE built with NVE_WITH_CUDA=OFF (CPU/host-only)");
+#endif
 }
 
 nve_status_t nve_table_destroy(nve_table_t table) {
